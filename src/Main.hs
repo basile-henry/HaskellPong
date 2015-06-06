@@ -3,31 +3,45 @@ module Main where
 import Graphics.UI.GLUT hiding (normalize)
 import Linear
 import Reactive.Banana
+import Reactive.Banana.Combinators
 import Reactive.Banana.Frameworks
 import Data.IORef
+import Data.Maybe
 import qualified Data.Set as Set
+import qualified Data.List as List
 import Data.Time.Clock.POSIX
 import Control.Concurrent
+import Control.Monad.Reader
 
 
 type Vec2 = V2 Float
 
-data Wall = WallT | WallB | WallL | WallR
+data Collider = WallT | WallB | WallL | WallR | PlayerT | PlayerB
+    deriving (Eq, Show)
 
-data WorldSate = WorldState {
-    pos1 :: Vec2
+data WorldSate t = WorldState {
+    ballPos :: Behavior t Vec2,
+    player1Pos :: Behavior t Vec2
 }
 
-velToPos :: forall t. Frameworks t => Vec2 -> Behavior t Vec2 -> Event t Float -> Behavior t Vec2
-velToPos initialPos velB frameE = position <$> changesTimePosVel <*> (stepper 0 frameE)
-    where
-        initialTimePosVel = (0, initialPos, zero)
-        position (time, pos, vel) currentTime = pos + ((currentTime - time) *^ vel)
-        -- (time, pos, vel)
-        changesTimePosVel = accumB initialTimePosVel (step <$> velB <@> frameE)
-        step newVel newTime tpv = (newTime, position tpv newTime, newVel)
+data PlayState = Play | PlaceT | PlaceB
+    deriving (Eq, Show)
 
-createFrpNetwork :: forall t. Frameworks t => AddHandler Float -> AddHandler Key -> AddHandler Key -> SettableStateVar [GraphicsPrimitive] -> Moment t ()
+data Game t = Game {
+    tickE :: Event t Float,
+    timeB :: Behavior t Float
+}
+
+integrateBall :: forall t. Frameworks t => Game t -> Vec2 -> Behavior t Vec2 -> Behavior t (Maybe Vec2) -> Behavior t Vec2
+integrateBall (Game{ tickE = tickE }) initialPos velB resetPosB = accumB initialPos $ step <$> velB <*> resetPosB <@> tickE
+    where
+        step vel Nothing dt oldPos = oldPos + (vel ^* dt)
+        step _ (Just pos) _ _ = pos
+
+integratePlayer :: forall t. Frameworks t => Game t -> Vec2 -> Behavior t Vec2 -> Behavior t Vec2
+integratePlayer (Game{ tickE = tickE }) initialPos velB = accumB initialPos $ (\vel dt oldPos -> oldPos + (vel ^* dt)) <$> velB <@> tickE
+
+createFrpNetwork :: forall t. Frameworks t => AddHandler (Float, Float) -> AddHandler Key -> AddHandler Key -> SettableStateVar [GraphicsPrimitive] -> Moment t ()
 createFrpNetwork frameAddHandler keyDownAddHandler keyUpAddhandler prims = do
     frameE    <- fromAddHandler frameAddHandler
     keyDownE  <- fromAddHandler keyDownAddHandler
@@ -35,56 +49,112 @@ createFrpNetwork frameAddHandler keyDownAddHandler keyUpAddhandler prims = do
 
     let
 
-        radius = 0.05
+        game = Game {
+            tickE = fst <$> frameE,
+            timeB = stepper 0 (snd <$> frameE)
+        }
 
-        timeB = stepper 0 frameE
-        {-
         keysPressedB = accumB Set.empty $
             (Set.delete <$> keyUpE) `union`
             (Set.insert <$> keyDownE)
 
-        vel1 = toTotVel <$> keysPressedB where
-            toTotVel keys = (0.3 *^) $ normalize $ sum $ map toVel (Set.toList keys)
-            toVel (SpecialKey KeyLeft)   = V2 (-1) 0
-            toVel (SpecialKey KeyRight)  = V2 1 0
-            toVel (SpecialKey KeyUp)     = V2 0 1
-            toVel (SpecialKey KeyDown)   = V2 0 (-1)
-            toVel _                      = V2 0 0
+        playStateB = stepper PlaceT $
+            (toPlayer <$> goalE) `union`
+            (Play  <$ startPlayE)
+            where
+                toPlayer WallT = PlaceT
+                toPlayer WallB = PlaceB
 
-        pos1B = velToPos zero vel1 frameE
-        -}
+        startPlayE = (whenE ((== PlaceT) <$> playStateB) (filterE (== Char 's') keyDownE)) `union`
+                     (whenE ((== PlaceB) <$> playStateB) (filterE (== SpecialKey KeyUp) keyDownE))
 
-        -- Event Wall
-        colBallE = filterE (not . null) (checkCollision <$> posBallB <@ frameE)
-        checkCollision (V2 x y) =
-            [WallT    | y > 1 - radius] ++
-            [WallB    | radius - 1 > y] ++
-            [WallL    | radius - 1 > x] ++
-            [WallR    | x > 1 - radius]
-
-        velBallB = stepper (V2 4 10) (newVel <$> velBallB <@> colBallE)
-        newVel (V2 h v) (WallT:other) = newVel (V2 h (-(abs v))) other
-        newVel (V2 h v) (WallB:other) = newVel (V2 h (abs v)) other
-        newVel (V2 h v) (WallL:other) = newVel (V2 (abs h) v) other
-        newVel (V2 h v) (WallR:other) = newVel (V2 (-(abs h)) v) other
-        newVel vel [] = vel
-
-        posBallB = velToPos zero velBallB frameE
+        --
+        -- Players
+        --
 
 
+        playerSpeed = 1.8
+        playerRadius = 0.3
+        playerWidth = 0.3
+        playerOffset = playerRadius * cos (asin (playerWidth / (2 * playerRadius)))
 
-        worldStateB = (\pos1 -> WorldState { pos1 = pos1 }) <$> posBallB
+        createPlayer startPos (leftKey, rightKey) = (posB, velB)
+            where
 
-    --reactimate $ (putStrLn "Hello!") <$ frameE
-    reactimate $ (\worldState -> do
-            prims $= [
-                    --Rectangle (V2 (x-0.1) (y-0.1)) (V2 (x+0.1) (y+0.1))
-                    Circle (pos1 worldState) radius
-                ]
-        ) <$> (worldStateB <@ frameE)
+                posB = integratePlayer game startPos velB
+
+                velB = toTotVel <$> posB <*> keysPressedB where
+                    toTotVel (V2 px _) keys = (playerSpeed *^) $ normalize $ sum $ mapMaybe toVel (Set.toList keys) where
+                        toVel key = constrain <$> lookup key [
+                                  (leftKey,   V2 (-1) 0),
+                                  (rightKey,  V2   1  0)
+                              ]
+                        constrain (V2 vx vy)
+                            | px < -1 + (playerRadius/2) && vx < 0 || px > 1 - (playerRadius/2) && vx > 0  = zero
+                            | otherwise                              = V2 (max ((playerWidth/2) - 1) (min vx (1 - (playerWidth/2)))) vy
+
+        (posPlayerT, velPlayerT) = createPlayer (V2 0 (1 + playerOffset)) (Char 'a', Char 'd')
+        (posPlayerB, velPlayerB) = createPlayer (V2 0 (-1 - playerOffset)) (SpecialKey KeyLeft, SpecialKey KeyRight)
+
+        --
+        -- Ball
+        --
+
+        ballRadius = 0.05
+        ballSpeed = 0.5
+
+        colBallE = fst <$> (accumE ([], []) $ (\new (_, last) -> (new List.\\ last, new)) <$> (filterE (not . null) (checkCollision <$> posBallB <*> posPlayerB <*> posPlayerT <@ frameE)))
+        checkCollision posBall@(V2 x y) posB posT =
+            [WallT    | y > 1] ++
+            [WallB    | (-1) > y] ++
+            [WallL    | ballRadius - 1 > x] ++
+            [WallR    | x > 1 - ballRadius] ++
+            [PlayerT  | (ballRadius + playerRadius) > (norm $ posBall - posT)] ++
+            [PlayerB  | (ballRadius + playerRadius) > (norm $ posBall - posB)]
 
 
 
+        goalE = head <$> (filterE (/= []) $ (List.intersect [WallT, WallB]) <$> colBallE)
+        placeBallPosB = ((\playState posT posB -> case playState of
+                    PlaceT -> Just $ posT - (V2 0 (playerRadius + ballRadius))
+                    PlaceB -> Just $ posB + (V2 0 (playerRadius + ballRadius))
+                    _      -> Nothing
+                ) <$> playStateB <*> posPlayerT <*> posPlayerB)
+
+
+        velBallB = stepper zero $
+            (newVel <$> posPlayerT <*> posPlayerB <*> velPlayerT <*> velPlayerB <*> posBallB <*> velBallB <@> colBallE) `union`
+            (startVel <$> velPlayerT <*> velPlayerB <*> playStateB <@ startPlayE)
+            where
+                startVel velT _ PlaceT = ballSpeed *^ (normalize ((normalize velT) + (V2 0 (-1))))
+                startVel _ velB PlaceB = ballSpeed *^ (normalize ((normalize velB) + (V2 0 1)))
+                startVel _ _ _ = error "WTF Mate!"
+
+--        newVel (V2 h v) (WallT:other) = newVel (V2 h (-(abs v))) other
+--        newVel (V2 h v) (WallB:other) = newVel (V2 h (abs v)) other
+        newVel posT posB velT velB posBall (V2 h v) (WallL:other) = newVel posT posB velT velB posBall (V2 (abs h) v) other
+        newVel posT posB velT velB posBall (V2 h v) (WallR:other) = newVel posT posB velT velB posBall (V2 (-(abs h)) v) other
+        newVel posT posB velT velB posBall velBall (PlayerT:other) = newVel posT posB velT velB posBall (newVelPlayerBounce posT velT posBall velBall) other
+        newVel posT posB velT velB posBall velBall (PlayerB:other) = newVel posT posB velT velB posBall (newVelPlayerBounce posB velB posBall velBall) other
+        newVel posT posB velT velB posBall vel (x:xs) = newVel posT posB velT velB posBall vel xs
+        newVel _ _ _ _ _ vel [] = vel
+
+        newVelPlayerBounce playerPos playerVel ballPos ballVel = ballVel - (2 * (ballVel `dot` n) *^ n) + ((normalize playerVel) ^* (playerVel `dot` n)) where
+            n = normalize $ ballPos - playerPos
+
+        posBallB = integrateBall game zero velBallB placeBallPosB
+
+    --
+    -- Graphics prims
+    --
+
+    reactimate $ print <$> goalE
+
+    reactimate $ (\ballPos pos1 pos2-> prims $= [
+            Circle ballPos ballRadius,
+            Circle pos1 playerRadius,
+            Circle pos2 playerRadius
+        ]) <$> posBallB <*> posPlayerB <*> posPlayerT <@ frameE
 
 
 --
@@ -125,8 +195,8 @@ main = do
     let
         loop lastTime = do
             time <- getPOSIXTime
-            frameHandler $ realToFrac (time - startTime)
-            threadDelay 17
+            frameHandler $ (realToFrac (time - lastTime), realToFrac (time - startTime))
+            threadDelay 10000
             loop time
     forkIO $ loop startTime
     network <- compile $ createFrpNetwork
@@ -156,12 +226,7 @@ display window refPrims = do
 
 renderGraphicsPrimitive :: GraphicsPrimitive -> IO ()
 renderGraphicsPrimitive (Rectangle (V2 left top) (V2 right bottom)) = renderPrimitive Quads $ do
-    let
-        center = (left + right) / 2
-        r = (center + 1) / 2
-        g = (center + 1) / 2
-        b = (center + 1) / 2
-    color3f r g b
+    color3f 1 1 1
     vertex3f left top 0
     vertex3f right top 0
     vertex3f right bottom 0

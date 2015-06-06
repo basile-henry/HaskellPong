@@ -8,6 +8,7 @@ executable Test01
   hs-source-dirs:  src
   extensions:      RankNTypes
   build-depends:   base,
+                   mtl,
                    containers,
                    time,
                    GLUT,

@@ -1,17 +1,20 @@
-name:              Test01
+name:              HaskellPong
 version:           1.0
 Build-Type:        Simple
 cabal-version:     >= 1.2
 
-executable Test01
+executable HaskellPong
   main-is:         Main.hs
   hs-source-dirs:  src
   extensions:      RankNTypes
   build-depends:   base,
+                   safe,
                    mtl,
                    containers,
                    time,
                    GLUT,
+                   SDL,
+                   SDL-mixer,
                    linear,
                    reactive-banana
 

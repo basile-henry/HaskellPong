@@ -1,6 +1,7 @@
 # HaskellPong
-<hr/>
 Small pong game written in Haskell.
+<br/>
+<img src="http://i.imgur.com/EaCtIOM.png" width="50%"/>
 
 ### Building
 This should be straight forward with cabal:

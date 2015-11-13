@@ -16,5 +16,5 @@ executable HaskellPong
                    SDL,
                    SDL-mixer,
                    linear,
-                   reactive-banana
+                   reactive-banana (<0.9)
 

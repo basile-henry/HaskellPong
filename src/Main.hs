@@ -131,7 +131,7 @@ createFrpNetwork numHP gameSounds frameAddHandler keyDownAddHandler keyUpAddhand
                         | otherwise                     = targetX - px
                         where
                             targetX
-                                | bvy * awayYDir > 0 = (by-awayYDir)/6
+                                | bvy * awayYDir >= 0 = (by-awayYDir)/6
                                 | otherwise          = bx
 
         playerFromDesiredVelB side (desiredXVelB, tryFireE) = (posB, velB, fireE)
@@ -318,7 +318,7 @@ main = do
     (_progName, _args) <- getArgsAndInitialize
 
     initialWindowSize $= Size 1000 1000
-    initialWindowPosition $= Position 2000 300
+    initialWindowPosition $= Position 800 10
     initialDisplayMode $= [
             RGBAMode,
             DoubleBuffered,
